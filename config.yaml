@@ -1,0 +1,53 @@
+spur:
+  symmetry: null
+  num_tiles: 96
+  num_ret_tiles: 96
+  num_cool_classes: 10
+  translation_canvas: null
+  seed: null
+  rotation_canvas: 3.141592653589793
+  rotation_mask: 0.7853981633974483
+
+model:
+  d_model: 128
+  num_heads: 8
+  num_layers: 8
+  num_global_tokens: 8
+  class_embed_dim: 32
+  time_embed_dim: 32
+  dropout: 0.0
+
+flow:
+  sigma: 1.0
+  kappa: 0.05
+  matching: true
+  match_target_size: 64
+  match_max_size: 80
+  lsa_workers: 8
+
+train:
+  batch_size: 64
+  samples_per_class: 1920
+  samples_per_epoch: null
+  num_epochs: 101
+  learning_rate: 0.001
+  weight_decay: 0.01
+  min_lr_factor: 0.1
+  grad_clip: 1.0
+  seed: 0
+  device: cuda
+
+reverse:
+  n: 1
+  seed: 1
+  num_steps: 100
+
+wandb:
+  enable: true
+  project: penrose-foam
+  run_name: null
+  run_id: null
+
+output:
+  directory: outputs
+  resume: null
