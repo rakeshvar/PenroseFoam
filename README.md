@@ -4,14 +4,18 @@ PenroseFoam is an independent PyTorch experiment for class-conditioned masked
 optimal-transport flow on live PenroseSpur batches. Its only state is
 `(x, y, scaled_angle, occupancy)` and its only sampler is 384-step Euler.
 
-For each clean sample, tiles are sorted by radius and assigned
-`rho_i = (rank(r_i) + 0.5) / N`. An endpoint-normalized logistic with
-`kappa=0.05` gives exact occupancy zero at time zero and one at time one,
-while revealing an approximately uniform fraction of tiles center-out.
-Before constructing this path, Foam moves the nearest-to-center tile into slot
+Before constructing the path, Foam moves the nearest-to-center tile into slot
 zero, translates it to the origin, and rotates all geometry and angles into
 its frame. This anchor remains `(0, 0, 0, 1)` with zero velocity throughout
-the flow and is excluded from both radial ranking and LSA.
+the flow and is excluded from both ranking and LSA.
+
+For every other clean tile, Foam computes polar coordinates `(r, phi)`, with
+`phi` in `[0, 2*pi)`, and the radial shell
+`q = round(r / (delta_S * side / 2))`. It sorts lexicographically by `(q, phi)`
+and assigns `rho_i = (rank_i + 0.5) / (N - 1)`. Here `delta_6 = sqrt(3)` and
+the representative Penrose factor is the weighted `delta_5 ~= 0.78`. An
+endpoint-normalized logistic with `kappa=0.05` gives exact occupancy zero at
+time zero and one at time one.
 
 Every other source angle is zero. The nonnegative occupancy derivative gates
 its anchor-relative XYA displacement to produce the joint four-channel

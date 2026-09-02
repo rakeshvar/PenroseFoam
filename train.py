@@ -124,7 +124,9 @@ def train(config: Config, *, reset_optimizer: bool = False) -> Path | None:
             )
     spur = build_spur(config, device)
     model = DirectTransformer(config.model, len(spur.class_names)).to(device)
-    diffuser = MaskedFlow(config.flow.kappa)
+    diffuser = MaskedFlow(
+        config.spur.symmetry, float(spur.side), config.flow.kappa
+    )
     start_epoch = int(resume["epoch"]) + 1 if resume else 0
     schedule_epochs = (
         config.train.num_epochs - start_epoch
@@ -239,7 +241,8 @@ def train(config: Config, *, reset_optimizer: bool = False) -> Path | None:
                 "model": model.state_dict(),
                 "diffuser": {
                     "version": FLOW_VERSION,
-                    "coordinate": "radial_rank",
+                    "coordinate": "quantized_polar_rank",
+                    "radial_bin_width": diffuser.radial_bin_width,
                     "kappa": diffuser.kappa,
                 },
                 "optimizer": optimizer.state_dict(),

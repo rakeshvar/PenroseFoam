@@ -17,7 +17,19 @@ if str(SPUR_DIR) not in sys.path:
     sys.path.append(str(SPUR_DIR))
 from flow_geometry import ANGLE_HALF_PERIOD, angle_delta, wrap_angle  # noqa: E402
 
-FLOW_VERSION = "anchor-zero-angle-radial-rank-v2"
+FLOW_VERSION = "anchor-zero-angle-quantized-polar-rank-v3"
+
+
+def representative_neighbor_factor(symmetry: int) -> float:
+    if symmetry == 6:
+        return math.sqrt(3.0)
+    if symmetry == 5:
+        return (
+            0.24 * math.sin(math.pi / 5.0)
+            + 0.59 * math.sin(3.0 * math.pi / 10.0)
+            + 0.17 * math.sin(2.0 * math.pi / 5.0)
+        )
+    raise ValueError(f"symmetry must be 5 or 6, got {symmetry}")
 
 
 def canonicalize_anchor_frame(
@@ -55,15 +67,26 @@ def canonicalize_anchor_frame(
 class MaskedFlow:
     """Linear-time XYA path gated by exact-endpoint logistic occupancy."""
 
-    def __init__(self, kappa: float = 0.05):
-        if kappa <= 0:
-            raise ValueError("kappa must be positive")
+    def __init__(self, symmetry: int, side: float, kappa: float = 0.05):
+        if side <= 0 or kappa <= 0:
+            raise ValueError("side and kappa must be positive")
+        self.symmetry = int(symmetry)
+        self.side = float(side)
         self.kappa = float(kappa)
+        self.radial_bin_width = (
+            representative_neighbor_factor(self.symmetry) * self.side / 2.0
+        )
 
-    @staticmethod
-    def rank_coordinate(data: torch.Tensor) -> torch.Tensor:
-        radius_sq = data[..., :2].square().sum(dim=-1)
-        order = torch.argsort(radius_sq, dim=-1, stable=True)
+    def rank_coordinate(self, data: torch.Tensor) -> torch.Tensor:
+        x, y = data[..., 0], data[..., 1]
+        radius = torch.sqrt(x.square() + y.square())
+        radial_shell = torch.round(radius / self.radial_bin_width)
+        phi = torch.remainder(torch.atan2(y, x), 2.0 * math.pi)
+
+        phi_order = torch.argsort(phi, dim=-1, stable=True)
+        shells_in_phi_order = radial_shell.gather(1, phi_order)
+        shell_order = torch.argsort(shells_in_phi_order, dim=-1, stable=True)
+        order = phi_order.gather(1, shell_order)
         ranks = torch.empty_like(order)
         rank_values = torch.arange(
             data.shape[1], device=data.device, dtype=order.dtype

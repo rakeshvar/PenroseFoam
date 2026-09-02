@@ -95,7 +95,7 @@ def check_configs_and_model(root: Path) -> None:
 
 
 def check_masked_flow() -> None:
-    flow = MaskedFlow(kappa=0.05)
+    flow = MaskedFlow(symmetry=6, side=2.0 / math.sqrt(3.0), kappa=0.05)
     raw = torch.tensor([[[2.0, 1.0, 1.0], [0.1, 0.1, 0.5]]])
     data, order, anchor_angle = canonicalize_anchor_frame(raw)
     assert order.tolist() == [[1, 0]]
@@ -105,6 +105,15 @@ def check_masked_flow() -> None:
     noise = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]])
     rho = flow.rank_coordinate(data)
     assert torch.equal(rho, torch.tensor([[0.25, 0.75]]))
+    radius = torch.tensor([2.1, 1.4, 1.1, 0.2])
+    phi = torch.tensor([0.2, 1.0, 0.5, 5.0])
+    polar_data = torch.zeros(1, 4, 3)
+    polar_data[0, :, 0] = radius * phi.cos()
+    polar_data[0, :, 1] = radius * phi.sin()
+    polar_rank = flow.rank_coordinate(polar_data)
+    assert torch.equal(
+        polar_rank, torch.tensor([[0.875, 0.625, 0.375, 0.125]])
+    )
     endpoints = torch.tensor([0.0, 1.0])
     duplicated_rho = rho.expand(2, -1)
     u, du = flow.occupancy(endpoints, duplicated_rho)
@@ -160,7 +169,9 @@ def check_optimizer_euler_svg(root: Path) -> None:
     config = config_from_dict(smoke_values(root))
     spur = build_spur(config, torch.device("cpu"))
     generator = make_generator(torch.device("cpu"), 17)
-    flow = MaskedFlow(config.flow.kappa)
+    flow = MaskedFlow(
+        config.spur.symmetry, float(spur.side), config.flow.kappa
+    )
     batch = prepare_flow_batch(spur, flow, 2, generator, True, 64, 80, 1)
     model = DirectTransformer(config.model, len(spur.class_names))
     prediction = model(batch.state, batch.colors, batch.time, batch.labels)
@@ -226,11 +237,10 @@ def check_fresh_process_resume(root: Path) -> None:
     run_train(["--config", str(first_config)], environment)
     first_path, first = newest_checkpoint(output)
     assert first["epoch"] == 0 and first["global_step"] == 1
-    assert first["diffuser"] == {
-        "version": FLOW_VERSION,
-        "coordinate": "radial_rank",
-        "kappa": 0.05,
-    }
+    assert first["diffuser"]["version"] == FLOW_VERSION
+    assert first["diffuser"]["coordinate"] == "quantized_polar_rank"
+    assert first["diffuser"]["radial_bin_width"] > 0
+    assert first["diffuser"]["kappa"] == 0.05
     assert first["identifier"].startswith("foam_")
     assert set(first["rng"]) == {
         "python", "numpy", "torch_cpu", "torch_cuda",

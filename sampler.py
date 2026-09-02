@@ -256,7 +256,9 @@ def main() -> None:
     spur = build_spur(config, device)
     model = DirectTransformer(config.model, len(spur.class_names)).to(device)
     model.load_state_dict(checkpoint["model"])
-    diffuser = MaskedFlow(config.flow.kappa)
+    diffuser = MaskedFlow(
+        config.spur.symmetry, float(spur.side), config.flow.kappa
+    )
     count = args.count or config.reverse.n
     seed = config.reverse.seed if args.seed is None else args.seed
     steps = args.num_steps or config.reverse.num_steps
