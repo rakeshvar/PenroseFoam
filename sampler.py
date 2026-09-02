@@ -170,6 +170,7 @@ def save_sample_svg(
     symmetry: int,
     side: float,
 ) -> Path:
+    opacity = 0.15 + 0.60 * state[..., 3].clamp(0.0, 1.0)
     return save_tiles_svg(
         path,
         state[..., :3],
@@ -177,8 +178,9 @@ def save_sample_svg(
         symmetry=symmetry,
         side=side,
         angle_scale=ANGLE_SCALE,
+        background="#000000",
         show_arcs=symmetry == 5,
-        opacities=state[..., 3].clamp(0.0, 1.0),
+        opacities=opacity,
         alpha=1.0,
     )
 
@@ -226,7 +228,7 @@ def main() -> None:
     spur = build_spur(config, device)
     model = DirectTransformer(config.model, len(spur.class_names)).to(device)
     model.load_state_dict(checkpoint["model"])
-    diffuser = MaskedFlow(config.flow.sigma, config.flow.kappa)
+    diffuser = MaskedFlow(config.flow.kappa)
     count = args.count or config.reverse.n
     seed = config.reverse.seed if args.seed is None else args.seed
     steps = args.num_steps or config.reverse.num_steps

@@ -63,7 +63,7 @@ def check_configs_and_model(root: Path) -> None:
         assert config.model.num_heads == 8
         assert config.model.num_global_tokens == globals_
         assert config.model.class_embed_dim == config.model.time_embed_dim == 32
-        assert config.flow.matching and config.reverse.num_steps == 100
+        assert config.flow.matching and config.reverse.num_steps == 384
     try:
         load_config([])
     except ValueError as error:
@@ -94,11 +94,11 @@ def check_configs_and_model(root: Path) -> None:
 
 
 def check_masked_flow() -> None:
-    flow = MaskedFlow(sigma=1.0, kappa=0.05)
+    flow = MaskedFlow(kappa=0.05)
     data = torch.tensor([[[0.0, 0.0, -1.70], [2.0, 0.0, -1.70]]])
     noise = torch.tensor([[[1.0, 1.0, 1.70], [1.0, 1.0, 1.70]]])
-    rho = flow.radius_coordinate(data)
-    assert rho[0, 0] < rho[0, 1]
+    rho = flow.rank_coordinate(data)
+    assert torch.equal(rho, torch.tensor([[0.25, 0.75]]))
     endpoints = torch.tensor([0.0, 1.0])
     duplicated_rho = rho.expand(2, -1)
     u, du = flow.occupancy(endpoints, duplicated_rho)
@@ -153,7 +153,7 @@ def check_optimizer_euler_svg(root: Path) -> None:
     config = config_from_dict(smoke_values(root))
     spur = build_spur(config, torch.device("cpu"))
     generator = make_generator(torch.device("cpu"), 17)
-    flow = MaskedFlow(config.flow.sigma, config.flow.kappa)
+    flow = MaskedFlow(config.flow.kappa)
     batch = prepare_flow_batch(spur, flow, 2, generator, True, 64, 80, 1)
     model = DirectTransformer(config.model, len(spur.class_names))
     prediction = model(batch.state, batch.colors, batch.time, batch.labels)
@@ -169,10 +169,15 @@ def check_optimizer_euler_svg(root: Path) -> None:
     assert torch.all((0 <= generated[..., 3]) & (generated[..., 3] <= 1))
     generated[0, :, 3] = torch.linspace(0, 1, 12)
     path = save_sample_svg(root / "opacity.svg", generated[0], colors[0], 6, float(spur.side))
-    polygons = ET.parse(path).findall(".//{http://www.w3.org/2000/svg}polygon")
+    document = ET.parse(path)
+    polygons = document.findall(".//{http://www.w3.org/2000/svg}polygon")
     assert len(polygons) == 12
     opacity = torch.tensor([float(item.attrib["opacity"]) for item in polygons])
-    assert torch.allclose(opacity, generated[0, :, 3], atol=5e-5)
+    assert torch.allclose(
+        opacity, 0.15 + 0.60 * generated[0, :, 3], atol=5e-5
+    )
+    background = document.find(".//{http://www.w3.org/2000/svg}rect")
+    assert background is not None and background.attrib["fill"] == "#000000"
 
 
 def check_retention(root: Path) -> None:
@@ -212,20 +217,36 @@ def check_fresh_process_resume(root: Path) -> None:
     run_train(["--config", str(first_config)], environment)
     first_path, first = newest_checkpoint(output)
     assert first["epoch"] == 0 and first["global_step"] == 1
-    assert first["diffuser"] == {"sigma": 1.0, "kappa": 0.05}
+    assert first["diffuser"] == {"coordinate": "radial_rank", "kappa": 0.05}
     assert first["identifier"].startswith("foam_")
     assert set(first["rng"]) == {
         "python", "numpy", "torch_cpu", "torch_cuda",
         "training_generator", "sampling_generator",
     }
     run_train(["--resume", str(first_path), "-t", "num_epochs=2"], environment)
-    _, resumed = newest_checkpoint(output)
+    resumed_path, resumed = newest_checkpoint(output)
     assert resumed["epoch"] == 1 and resumed["global_step"] == 2
     assert resumed["identifier"] == first["identifier"]
     assert resumed["output_directory"] == first["output_directory"]
+    run_train(
+        [
+            "--resume", str(resumed_path),
+            "--reset-optimizer",
+            "--learning-rate", "0.0003",
+            "-t", "num_epochs=4",
+            "-t", "warmup_epochs=1",
+        ],
+        environment,
+    )
+    _, reset = newest_checkpoint(output)
+    assert reset["epoch"] == 3 and reset["global_step"] == 4
+    assert reset["identifier"] == first["identifier"]
+    assert reset["config"]["train"]["learning_rate"] == 0.0003
+    assert reset["config"]["train"]["warmup_epochs"] == 1
     svg = Path(first["output_directory"]) / "svg"
     assert (svg / f"{first['identifier']}_e000.svg").exists()
     assert (svg / f"{first['identifier']}_e001.svg").exists()
+    assert (svg / f"{first['identifier']}_e003.svg").exists()
 
 
 def main() -> None:

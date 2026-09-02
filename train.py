@@ -35,9 +35,19 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def build_scheduler(optimizer: torch.optim.Optimizer, config: Config) -> LambdaLR:
-    epochs = config.train.num_epochs
-    warmup = min(10, math.floor(0.05 * epochs))
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    config: Config,
+    schedule_epochs: int | None = None,
+) -> LambdaLR:
+    epochs = schedule_epochs or config.train.num_epochs
+    warmup = (
+        config.train.warmup_epochs
+        if config.train.warmup_epochs is not None
+        else min(10, math.floor(0.05 * epochs))
+    )
+    if warmup >= epochs:
+        raise ValueError("warmup epochs must be less than scheduled training epochs")
     floor = config.train.min_lr_factor
 
     def factor(position: int) -> float:
@@ -94,7 +104,7 @@ def _move_optimizer_state(
                 state[key] = value.to(device)
 
 
-def train(config: Config) -> Path | None:
+def train(config: Config, *, reset_optimizer: bool = False) -> Path | None:
     seed_everything(config.train.seed)
     device = choose_device(config.train.device)
     resume_path = Path(config.output.resume) if config.output.resume else None
@@ -103,24 +113,34 @@ def train(config: Config) -> Path | None:
         if resume_path else None
     )
     if resume:
-        validate_resume_config(config, resume["config"])
+        validate_resume_config(
+            config, resume["config"], reset_optimizer=reset_optimizer
+        )
     spur = build_spur(config, device)
     model = DirectTransformer(config.model, len(spur.class_names)).to(device)
-    diffuser = MaskedFlow(config.flow.sigma, config.flow.kappa)
+    diffuser = MaskedFlow(config.flow.kappa)
+    start_epoch = int(resume["epoch"]) + 1 if resume else 0
+    schedule_epochs = (
+        config.train.num_epochs - start_epoch
+        if resume and reset_optimizer
+        else config.train.num_epochs
+    )
+    if schedule_epochs <= 0:
+        raise ValueError("num_epochs must exceed the resumed checkpoint epoch")
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.train.learning_rate,
         weight_decay=config.train.weight_decay,
     )
-    scheduler = build_scheduler(optimizer, config)
+    scheduler = build_scheduler(optimizer, config, schedule_epochs)
     training_generator = make_generator(device, config.train.seed)
     sampling_generator = make_generator(device, config.reverse.seed)
     if resume:
         model.load_state_dict(resume["model"])
-        optimizer.load_state_dict(resume["optimizer"])
-        scheduler.load_state_dict(resume["scheduler"])
-        _move_optimizer_state(optimizer, device)
+        if not reset_optimizer:
+            optimizer.load_state_dict(resume["optimizer"])
+            scheduler.load_state_dict(resume["scheduler"])
+            _move_optimizer_state(optimizer, device)
         restore_rng(resume["rng"], training_generator, sampling_generator)
-        start_epoch = int(resume["epoch"]) + 1
         global_step = int(resume["global_step"])
         identifier = str(resume["identifier"])
         output_directory = Path(resume["output_directory"])
@@ -211,7 +231,10 @@ def train(config: Config) -> Path | None:
                 "average_training_loss": average, "metrics": metrics,
                 "best_epoch": best_epoch, "best_primary_metric": best_loss,
                 "model": model.state_dict(),
-                "diffuser": {"sigma": diffuser.sigma, "kappa": diffuser.kappa},
+                "diffuser": {
+                    "coordinate": "radial_rank",
+                    "kappa": diffuser.kappa,
+                },
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "config": config.to_dict(), "symmetry": config.spur.symmetry,
@@ -243,8 +266,8 @@ def train(config: Config) -> Path | None:
 
 
 def main() -> None:
-    config, _ = load_config()
-    train(config)
+    config, args = load_config()
+    train(config, reset_optimizer=args.reset_optimizer)
 
 
 if __name__ == "__main__":

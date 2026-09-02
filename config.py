@@ -42,7 +42,6 @@ class ModelConfig:
 
 @dataclass
 class FlowConfig:
-    sigma: float = 1.0
     kappa: float = 0.05
     matching: bool = True
     match_target_size: int = 64
@@ -57,6 +56,7 @@ class TrainConfig:
     samples_per_epoch: int | None = None
     num_epochs: int = 101
     learning_rate: float = 1e-3
+    warmup_epochs: int | None = None
     weight_decay: float = 0.01
     min_lr_factor: float = 0.1
     grad_clip: float = 1.0
@@ -68,7 +68,7 @@ class TrainConfig:
 class ReverseConfig:
     n: int = 1
     seed: int = 1
-    num_steps: int = 100
+    num_steps: int = 384
 
 
 @dataclass
@@ -110,7 +110,7 @@ IMMUTABLE_ON_RESUME = (
     "spur.rotation_canvas", "spur.rotation_mask", "model.d_model",
     "model.num_heads", "model.num_layers", "model.num_global_tokens",
     "model.class_embed_dim", "model.time_embed_dim", "model.dropout",
-    "flow.sigma", "flow.kappa", "flow.matching", "flow.match_target_size",
+    "flow.kappa", "flow.matching", "flow.match_target_size",
     "flow.match_max_size", "flow.lsa_workers", "train.batch_size",
     "train.samples_per_epoch", "train.learning_rate", "train.weight_decay",
     "train.min_lr_factor", "train.grad_clip", "train.seed",
@@ -194,8 +194,8 @@ def validate(config: Config) -> None:
     if not 0 <= model.dropout < 1:
         raise ValueError("model.dropout must be in [0,1)")
     flow = config.flow
-    if min(flow.sigma, flow.kappa) <= 0:
-        raise ValueError("flow sigma and kappa must be positive")
+    if flow.kappa <= 0:
+        raise ValueError("flow kappa must be positive")
     if min(flow.match_target_size, flow.match_max_size, flow.lsa_workers) <= 0:
         raise ValueError("matching sizes and workers must be positive")
     if flow.match_target_size > flow.match_max_size:
@@ -205,6 +205,8 @@ def validate(config: Config) -> None:
         raise ValueError("all count settings must be positive")
     if config.train.samples_per_epoch is not None and config.train.samples_per_epoch <= 0:
         raise ValueError("train.samples_per_epoch must be positive or null")
+    if config.train.warmup_epochs is not None and config.train.warmup_epochs < 0:
+        raise ValueError("train.warmup_epochs must be nonnegative or null")
     if config.train.learning_rate <= 0 or config.train.grad_clip <= 0:
         raise ValueError("learning rate and gradient clip must be positive")
     if config.train.weight_decay < 0 or not 0 < config.train.min_lr_factor <= 1:
@@ -257,10 +259,22 @@ def nested_value(mapping: dict[str, Any], dotted: str) -> Any:
     return value
 
 
-def validate_resume_config(config: Config, saved: dict[str, Any]) -> None:
+def validate_resume_config(
+    config: Config,
+    saved: dict[str, Any],
+    *,
+    reset_optimizer: bool = False,
+) -> None:
     current = config.to_dict()
-    changed = [key for key in IMMUTABLE_ON_RESUME
-               if nested_value(current, key) != nested_value(saved, key)]
+    resettable = {
+        "train.learning_rate",
+        "train.min_lr_factor",
+    } if reset_optimizer else set()
+    changed = [
+        key for key in IMMUTABLE_ON_RESUME
+        if key not in resettable
+        and nested_value(current, key) != nested_value(saved, key)
+    ]
     if changed:
         raise ValueError("Immutable resume configuration changed: " + ", ".join(changed))
 
@@ -275,6 +289,7 @@ def load_config(argv: list[str] | None = None) -> tuple[Config, argparse.Namespa
     parser.add_argument("--translation", type=float)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--reset-optimizer", action="store_true")
     parser.add_argument("--reverse-steps", type=int)
     parser.add_argument("--output")
     parser.add_argument("--n", type=int)

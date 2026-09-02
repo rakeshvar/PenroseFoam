@@ -2,12 +2,13 @@
 
 PenroseFoam is an independent PyTorch experiment for class-conditioned masked
 optimal-transport flow on live PenroseSpur batches. Its only state is
-`(x, y, scaled_angle, occupancy)` and its only sampler is 100-step Euler.
+`(x, y, scaled_angle, occupancy)` and its only sampler is 384-step Euler.
 
-For each clean tile, radius is mapped to the Rayleigh CDF coordinate
-`rho = 1 - exp(-r^2 / (2 sigma^2))`. An endpoint-normalized logistic with
-`kappa=0.05` gives exact occupancy zero at time zero and one at time one.
-Its nonnegative analytic derivative multiplies the shortest XYA endpoint
+For each clean sample, tiles are sorted by radius and assigned
+`rho_i = (rank(r_i) + 0.5) / N`. An endpoint-normalized logistic with
+`kappa=0.05` gives exact occupancy zero at time zero and one at time one,
+while revealing an approximately uniform fraction of tiles center-out. Its
+nonnegative analytic derivative multiplies the shortest XYA endpoint
 displacement to produce the joint four-channel velocity target. The model's
 occupancy velocity uses softplus, so sampled occupancy cannot decrease.
 
@@ -23,7 +24,7 @@ Every train launch must explicitly choose `--symmetry 6` (hex) or
 - `config.yaml`: 96 tiles, 128-wide, 8 layers, 8 heads, 8 global tokens.
 - `config384.yaml`: 384 tiles, 256-wide, 12 layers, 8 heads, 16 global tokens.
 - Both use 32-dimensional class/time embeddings, batch 64, the first 10 cool
-  MPEG7 classes, matching enabled, and 100 Euler steps.
+  MPEG7 classes, matching enabled, and 384 Euler steps.
 
 Matching uses PenroseSpur's shared default LSA API: exact same-color solves
 within independently shuffled, balanced groups. Groups target 64 tiles, never
@@ -67,6 +68,17 @@ PENROSE_SPUR_PATH=../PenroseSpur ~/.aivenv/bin/python train.py \
 
 Model, Spur, flow, matching, and optimization settings are immutable on resume.
 
+To deliberately restart optimization while preserving model weights, run identity,
+output location, epoch numbering, and RNG state, use `--reset-optimizer`. This permits
+a new learning rate and warmup, and applies the fresh schedule only across the added
+epochs:
+
+```bash
+PENROSE_SPUR_PATH=../PenroseSpur ~/.aivenv/bin/python train.py \
+  --resume CHECKPOINT.pt --reset-optimizer --learning-rate 0.0003 \
+  -t num_epochs=501 -t warmup_epochs=20
+```
+
 ## Sample
 
 ```bash
@@ -75,8 +87,9 @@ PENROSE_SPUR_PATH=../PenroseSpur ~/.aivenv/bin/python sampler.py \
   --symmetry 6 --num-tiles 96 -o samples
 ```
 
-The class can be a configured MPEG7 name or numeric ID. Every generated tile
-is rendered; its clamped predicted occupancy is used directly as SVG opacity.
+The class can be a configured MPEG7 name or numeric ID. Generated SVGs use a
+black background and map clamped occupancy linearly to opacity:
+`alpha = 0.15 + 0.60 * u`.
 
 ## Test
 
