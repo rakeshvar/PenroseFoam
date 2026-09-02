@@ -7,10 +7,17 @@ optimal-transport flow on live PenroseSpur batches. Its only state is
 For each clean sample, tiles are sorted by radius and assigned
 `rho_i = (rank(r_i) + 0.5) / N`. An endpoint-normalized logistic with
 `kappa=0.05` gives exact occupancy zero at time zero and one at time one,
-while revealing an approximately uniform fraction of tiles center-out. Its
-nonnegative analytic derivative multiplies the shortest XYA endpoint
-displacement to produce the joint four-channel velocity target. The model's
-occupancy velocity uses softplus, so sampled occupancy cannot decrease.
+while revealing an approximately uniform fraction of tiles center-out.
+Before constructing this path, Foam moves the nearest-to-center tile into slot
+zero, translates it to the origin, and rotates all geometry and angles into
+its frame. This anchor remains `(0, 0, 0, 1)` with zero velocity throughout
+the flow and is excluded from both radial ranking and LSA.
+
+Every other source angle is zero. The nonnegative occupancy derivative gates
+its anchor-relative XYA displacement to produce the joint four-channel
+velocity target. The model's occupancy velocity uses softplus, so sampled
+occupancy cannot decrease. Reverse sampling restores one random global
+rotation after Euler integration, leaving the anchor at `(0, 0, a0, 1)`.
 
 PenroseSpur must be a sibling checkout, or `PENROSE_SPUR_PATH` must point to it.
 PenroseFoam has no runtime dependency on any other Penrose project.
@@ -67,6 +74,8 @@ PENROSE_SPUR_PATH=../PenroseSpur ~/.aivenv/bin/python train.py \
 ```
 
 Model, Spur, flow, matching, and optimization settings are immutable on resume.
+Checkpoints also store the fixed flow formulation version; checkpoints from the
+earlier independently noised-angle formulation are rejected.
 
 To deliberately restart optimization while preserving model weights, run identity,
 output location, epoch numbering, and RNG state, use `--reset-optimizer`. This permits

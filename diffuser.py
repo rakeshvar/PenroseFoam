@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import sys
@@ -14,7 +15,41 @@ SPUR_DIR = Path(
 ).resolve()
 if str(SPUR_DIR) not in sys.path:
     sys.path.append(str(SPUR_DIR))
-from flow_geometry import angle_delta, wrap_angle  # noqa: E402
+from flow_geometry import ANGLE_HALF_PERIOD, angle_delta, wrap_angle  # noqa: E402
+
+FLOW_VERSION = "anchor-zero-angle-radial-rank-v2"
+
+
+def canonicalize_anchor_frame(
+    data: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Put the nearest-to-center tile in slot zero and express XYA relative to it."""
+    if data.ndim != 3 or data.shape[-1] != 3 or data.shape[1] < 1:
+        raise ValueError("data must have shape (B,N,3) with N >= 1")
+    batch_size, num_tiles = data.shape[:2]
+    anchor_indices = data[..., :2].square().sum(dim=-1).argmin(dim=1)
+    order = torch.arange(num_tiles, device=data.device).expand(batch_size, -1).clone()
+    rows = torch.arange(batch_size, device=data.device)
+    order[rows, 0] = anchor_indices
+    order[rows, anchor_indices] = 0
+    ordered = data.gather(1, order[..., None].expand_as(data))
+
+    anchor_xy = ordered[:, :1, :2]
+    anchor_angle = ordered[:, 0, 2]
+    relative_xy = ordered[..., :2] - anchor_xy
+    phase = anchor_angle * (math.pi / ANGLE_HALF_PERIOD)
+    cosine, sine = phase.cos()[:, None], phase.sin()[:, None]
+    canonical_xy = torch.stack(
+        (
+            cosine * relative_xy[..., 0] + sine * relative_xy[..., 1],
+            -sine * relative_xy[..., 0] + cosine * relative_xy[..., 1],
+        ),
+        dim=-1,
+    )
+    canonical_angle = angle_delta(ordered[..., 2], anchor_angle[:, None])
+    canonical = torch.cat((canonical_xy, canonical_angle[..., None]), dim=-1)
+    canonical[:, 0] = 0.0
+    return canonical, order, anchor_angle
 
 
 class MaskedFlow:
@@ -57,8 +92,14 @@ class MaskedFlow:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if data.shape != noise.shape or data.ndim != 3 or data.shape[-1] != 3:
             raise ValueError("data and noise must share shape (B,N,3)")
-        rho = self.rank_coordinate(data)
+        rho = torch.zeros_like(data[..., 0])
+        if data.shape[1] > 1:
+            rho[:, 1:] = self.rank_coordinate(data[:, 1:])
         u, du = self.occupancy(time, rho)
+        u = u.clone()
+        du = du.clone()
+        u[:, 0] = 1.0
+        du[:, 0] = 0.0
         xy_delta = data[..., :2] - noise[..., :2]
         a_delta = angle_delta(data[..., 2], noise[..., 2])
         state_xya = torch.cat(

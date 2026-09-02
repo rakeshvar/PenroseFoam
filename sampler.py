@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import importlib.util
+import math
 import os
 from pathlib import Path
 import re
@@ -15,7 +16,7 @@ import torch
 
 from config import Config, config_from_dict, effective_translation
 from denoiser import DirectTransformer
-from diffuser import MaskedFlow
+from diffuser import FLOW_VERSION, MaskedFlow, canonicalize_anchor_frame
 
 PROJECT_DIR = Path(__file__).resolve().parent
 SPUR_DIR = Path(
@@ -93,16 +94,19 @@ def prepare_flow_batch(
     lsa_workers: int | None = None,
 ) -> FlowBatch:
     batch = spur.sample_batch(batch_size, generator=generator)
-    data = batch["xya"].float()
-    colors, labels = batch["colors"].long(), batch["labels"].long()
+    data, order, _ = canonicalize_anchor_frame(batch["xya"].float())
+    colors = batch["colors"].long().gather(1, order)
+    labels = batch["labels"].long()
     noise = spur.sample_noise(batch_size, generator=generator).to(data.dtype)
+    noise[..., 2] = 0.0
+    noise[:, 0] = 0.0
     time = diffuser.sample_training_times(batch_size, data.device, generator)
     if matching:
-        noise = _spur_match.match(
-            data,
-            noise,
+        noise[:, 1:] = _spur_match.match(
+            data[:, 1:],
+            noise[:, 1:],
             method="lsa",
-            colors=colors,
+            colors=colors[:, 1:],
             lsa_target_size=match_target_size,
             lsa_max_size=match_max_size,
             lsa_workers=lsa_workers,
@@ -134,7 +138,8 @@ def _condition_batch(
         batch = spur.sample_batch(
             count, mask_idx=torch.cat(indices), generator=generator
         )
-    return batch["colors"].long(), batch["labels"].long()
+    _, order, _ = canonicalize_anchor_frame(batch["xya"].float())
+    return batch["colors"].long().gather(1, order), batch["labels"].long()
 
 
 @torch.no_grad()
@@ -151,15 +156,32 @@ def reverse_sample(
         raise ValueError("sample count must be positive")
     colors, class_labels = _condition_batch(spur, count, generator, labels)
     xya = spur.sample_noise(count, generator=generator).float()
+    xya[..., 2] = 0.0
+    xya[:, 0] = 0.0
     state = torch.cat((xya, torch.zeros_like(xya[..., :1])), dim=-1)
+    state[:, 0, 3] = 1.0
     times = diffuser.sampling_times(num_steps, state.device, state.dtype)
     model.eval()
     period, half = 2.0 * (3.0 ** 0.5), 3.0 ** 0.5
     for start, stop in zip(times[:-1], times[1:]):
         velocity = model(state, colors, start.expand(count), class_labels)
+        velocity[:, 0] = 0.0
         state = state + (stop - start) * velocity
         state[..., 2] = torch.remainder(state[..., 2] + half, period) - half
         state[..., 3].clamp_(0.0, 1.0)
+        state[:, 0] = state.new_tensor((0.0, 0.0, 0.0, 1.0))
+
+    global_angle = (
+        torch.rand(count, device=state.device, generator=generator) * 2.0 - 1.0
+    ) * math.pi
+    cosine, sine = global_angle.cos()[:, None], global_angle.sin()[:, None]
+    xy = state[..., :2].clone()
+    state[..., 0] = cosine * xy[..., 0] - sine * xy[..., 1]
+    state[..., 1] = sine * xy[..., 0] + cosine * xy[..., 1]
+    state[..., 2] = torch.remainder(
+        state[..., 2] + global_angle[:, None] * ANGLE_SCALE + half,
+        period,
+    ) - half
     return state, colors, class_labels
 
 
@@ -218,6 +240,12 @@ def main() -> None:
     parser.add_argument("-o", "--output", type=Path, required=True)
     args = parser.parse_args()
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    saved_version = checkpoint.get("diffuser", {}).get("version")
+    if saved_version != FLOW_VERSION:
+        raise ValueError(
+            f"Checkpoint flow version {saved_version!r} is incompatible with "
+            f"{FLOW_VERSION!r}"
+        )
     values = checkpoint["config"]
     if args.symmetry is not None:
         values["spur"]["symmetry"] = args.symmetry

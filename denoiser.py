@@ -95,4 +95,7 @@ class DirectTransformer(nn.Module):
                 self.encoder(hidden + condition)[:, self.num_global_tokens:]
             )
         )
-        return torch.cat((raw[..., :3], F.softplus(raw[..., 3:4])), dim=-1)
+        velocity = torch.cat((raw[..., :3], F.softplus(raw[..., 3:4])), dim=-1)
+        anchor_mask = torch.ones_like(velocity[..., :1])
+        anchor_mask[:, 0] = 0.0
+        return velocity * anchor_mask
