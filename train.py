@@ -20,7 +20,7 @@ from config import (
     validate_resume_config,
 )
 from denoiser import DirectTransformer
-from diffuser import MaskedFlow
+from diffuser import FLOW_VERSION, MaskedFlow
 from sampler import (
     build_spur, choose_device, lattice_loss, make_generator, prepare_flow_batch,
     reverse_sample, save_sample_svg,
@@ -104,6 +104,12 @@ def train(config: Config) -> Path | None:
     )
     if resume:
         validate_resume_config(config, resume["config"])
+        saved_version = resume.get("diffuser", {}).get("version")
+        if saved_version != FLOW_VERSION:
+            raise ValueError(
+                f"Checkpoint flow version {saved_version!r} is incompatible with "
+                f"{FLOW_VERSION!r}"
+            )
     spur = build_spur(config, device)
     model = DirectTransformer(config.model, len(spur.class_names)).to(device)
     diffuser = MaskedFlow(config.flow.sigma, config.flow.kappa)
@@ -211,7 +217,11 @@ def train(config: Config) -> Path | None:
                 "average_training_loss": average, "metrics": metrics,
                 "best_epoch": best_epoch, "best_primary_metric": best_loss,
                 "model": model.state_dict(),
-                "diffuser": {"sigma": diffuser.sigma, "kappa": diffuser.kappa},
+                "diffuser": {
+                    "version": FLOW_VERSION,
+                    "sigma": diffuser.sigma,
+                    "kappa": diffuser.kappa,
+                },
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "config": config.to_dict(), "symmetry": config.spur.symmetry,

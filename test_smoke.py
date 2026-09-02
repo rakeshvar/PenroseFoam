@@ -21,7 +21,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 from checkpoint import retain_newest_and_best  # noqa: E402
 from config import config_from_dict, load_config, make_identifier  # noqa: E402
 from denoiser import DirectTransformer  # noqa: E402
-from diffuser import MaskedFlow  # noqa: E402
+from diffuser import FLOW_VERSION, MaskedFlow, canonicalize_anchor_frame  # noqa: E402
 from match import balanced_group_sizes, match  # noqa: E402
 from sampler import (  # noqa: E402
     build_spur, make_generator, prepare_flow_batch, reverse_sample, save_sample_svg,
@@ -81,6 +81,7 @@ def check_configs_and_model(root: Path) -> None:
         torch.randint(0, 70, (2,)),
     )
     assert output.shape == state.shape and torch.all(output[..., 3] >= 0)
+    assert torch.equal(output[:, 0], torch.zeros_like(output[:, 0]))
 
     values384 = yaml.safe_load((PROJECT_DIR / "config384.yaml").read_text())
     values384["spur"]["symmetry"] = 6
@@ -95,8 +96,13 @@ def check_configs_and_model(root: Path) -> None:
 
 def check_masked_flow() -> None:
     flow = MaskedFlow(sigma=1.0, kappa=0.05)
-    data = torch.tensor([[[0.0, 0.0, -1.70], [2.0, 0.0, -1.70]]])
-    noise = torch.tensor([[[1.0, 1.0, 1.70], [1.0, 1.0, 1.70]]])
+    raw = torch.tensor([[[2.0, 1.0, 1.0], [0.1, 0.1, 0.5]]])
+    data, order, anchor_angle = canonicalize_anchor_frame(raw)
+    assert order.tolist() == [[1, 0]]
+    assert torch.equal(data[:, 0], torch.zeros_like(data[:, 0]))
+    assert torch.allclose(anchor_angle, torch.tensor([0.5]))
+    data = torch.tensor([[[0.0, 0.0, 0.0], [2.0, 0.0, -1.70]]])
+    noise = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]])
     rho = flow.radius_coordinate(data)
     assert rho[0, 0] < rho[0, 1]
     endpoints = torch.tensor([0.0, 1.0])
@@ -109,8 +115,9 @@ def check_masked_flow() -> None:
     assert middle[0, 0] > middle[0, 1]
     state, velocity = flow.interpolate(data, noise, torch.tensor([0.5]))
     assert torch.isfinite(state).all() and torch.isfinite(velocity).all()
-    assert abs(state[0, 0, 2].item()) > 1.69
-    assert 0 < velocity[0, 0, 2].item() < 0.1
+    assert torch.equal(state[:, 0], torch.tensor([[0.0, 0.0, 0.0, 1.0]]))
+    assert torch.equal(velocity[:, 0], torch.zeros_like(velocity[:, 0]))
+    assert state[0, 1, 2] < 0 and velocity[0, 1, 2] < 0
     assert torch.all(velocity[..., 3] >= 0)
 
 
@@ -167,6 +174,8 @@ def check_optimizer_euler_svg(root: Path) -> None:
     assert generated.shape == (1, 12, 4)
     assert torch.isfinite(generated).all()
     assert torch.all((0 <= generated[..., 3]) & (generated[..., 3] <= 1))
+    assert torch.equal(generated[:, 0, :2], torch.zeros_like(generated[:, 0, :2]))
+    assert torch.equal(generated[:, 0, 3], torch.ones_like(generated[:, 0, 3]))
     generated[0, :, 3] = torch.linspace(0, 1, 12)
     path = save_sample_svg(root / "opacity.svg", generated[0], colors[0], 6, float(spur.side))
     polygons = ET.parse(path).findall(".//{http://www.w3.org/2000/svg}polygon")
@@ -212,7 +221,11 @@ def check_fresh_process_resume(root: Path) -> None:
     run_train(["--config", str(first_config)], environment)
     first_path, first = newest_checkpoint(output)
     assert first["epoch"] == 0 and first["global_step"] == 1
-    assert first["diffuser"] == {"sigma": 1.0, "kappa": 0.05}
+    assert first["diffuser"] == {
+        "version": FLOW_VERSION,
+        "sigma": 1.0,
+        "kappa": 0.05,
+    }
     assert first["identifier"].startswith("foam_")
     assert set(first["rng"]) == {
         "python", "numpy", "torch_cpu", "torch_cuda",
